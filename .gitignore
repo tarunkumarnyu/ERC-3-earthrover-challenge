@@ -36,7 +36,7 @@ models/*
 *.pth
 *.pt
 *.ckpt
-DBR/thirdparty/Depth-Anything-V2/checkpoints/
+third_party/Depth-Anything-V2/checkpoints/
 mbra_repo/deployment/model_weights/*
 !mbra_repo/deployment/model_weights/
 !mbra_repo/deployment/model_weights/README.md

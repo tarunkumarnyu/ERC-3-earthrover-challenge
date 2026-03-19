@@ -2,7 +2,7 @@
 Depth Estimator
 
 Wrapper around Depth Anything V2 for monocular depth estimation.
-Used by DBR for safety-aware training and optional runtime safety checking.
+Used for optional runtime depth-aware safety checking.
 
 Usage:
     from depth_estimator import DepthEstimator
@@ -21,8 +21,8 @@ import torch.nn.functional as F
 from PIL import Image
 
 # Add Depth-Anything-V2 to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'DBR', 'thirdparty', 'Depth-Anything-V2'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'DBR', 'thirdparty', 'Depth-Anything-V2', 'metric_depth'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'third_party', 'Depth-Anything-V2'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'third_party', 'Depth-Anything-V2', 'metric_depth'))
 
 
 class DepthEstimator:
@@ -70,8 +70,8 @@ class DepthEstimator:
             from depth_anything_v2.dpt import DepthAnythingV2
         except ImportError:
             # Try alternative import path
-            da_path = os.path.join(os.path.dirname(__file__), '..', 'DBR',
-                                   'thirdparty', 'Depth-Anything-V2')
+            da_path = os.path.join(os.path.dirname(__file__), '..', 'third_party',
+                                   'Depth-Anything-V2')
             sys.path.insert(0, da_path)
             from depth_anything_v2.dpt import DepthAnythingV2
 
@@ -91,7 +91,7 @@ class DepthEstimator:
         else:
             print(f"WARNING: No checkpoint found for {model_size} model.")
             print(f"Download from: https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Indoor-Small")
-            print(f"Place in: DBR/thirdparty/Depth-Anything-V2/checkpoints/")
+            print(f"Place in: third_party/Depth-Anything-V2/checkpoints/")
 
         self.model.eval()
         self.model.to(self.device)
@@ -101,9 +101,9 @@ class DepthEstimator:
         """Search for checkpoint file in common locations."""
         base_dir = os.path.join(os.path.dirname(__file__), '..')
         search_paths = [
-            os.path.join(base_dir, 'DBR', 'thirdparty', 'Depth-Anything-V2',
+            os.path.join(base_dir, 'third_party', 'Depth-Anything-V2',
                          'checkpoints', f'depth_anything_v2_metric_{model_size}.pth'),
-            os.path.join(base_dir, 'DBR', 'thirdparty', 'Depth-Anything-V2',
+            os.path.join(base_dir, 'third_party', 'Depth-Anything-V2',
                          'checkpoints', f'depth_anything_v2_{model_size}.pth'),
             os.path.join(base_dir, 'models', f'depth_anything_v2_{model_size}.pth'),
         ]
@@ -208,7 +208,7 @@ class DepthEstimator:
         """
         Convert depth map to polar clearance vector.
 
-        This is the key DBR representation: for each angular direction,
+        For each angular direction,
         what is the minimum distance to an obstacle?
 
         Args:

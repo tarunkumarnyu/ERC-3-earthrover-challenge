@@ -14,7 +14,7 @@ REQUIRED_DIRS = [
     "earth-rovers-sdk",
     "mbra_repo",
     "src",
-    "DBR",
+    "third_party",
     "models",
 ]
 
@@ -127,11 +127,11 @@ def main() -> int:
     else:
         warnings.append("no project-level checkpoints found under models/")
 
-    depth_weights = find_checkpoints(ROOT / "DBR/thirdparty/Depth-Anything-V2/checkpoints")
+    depth_weights = find_checkpoints(ROOT / "third_party/Depth-Anything-V2/checkpoints")
     if depth_weights:
         ok.append(f"found depth checkpoints: {len(depth_weights)} file(s)")
     else:
-        warnings.append("no Depth Anything checkpoints found under DBR/thirdparty/Depth-Anything-V2/checkpoints/")
+        warnings.append("no Depth Anything checkpoints found under third_party/Depth-Anything-V2/checkpoints/")
 
     hardcoded_hits: list[str] = []
     for path in ROOT.rglob("*"):

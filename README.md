@@ -10,7 +10,7 @@ This directory is meant to be pushed, cloned, and worked on as its own project. 
 - `earth-rovers-sdk/`: FrodoBots / EarthRover browser + FastAPI bridge.
 - `mbra_repo/`: MBRA / LogoNav research and deployment code used as the local-controller reference.
 - `src/`: shared runtime modules copied for this project, including rover interface and safety helpers.
-- `DBR/`: DBR-related material plus vendored `Depth-Anything-V2` dependency for optional depth safety.
+- `third_party/Depth-Anything-V2/`: vendored depth-estimation dependency for optional runtime safety.
 - `models/`: local checkpoint location for project-specific model files.
 
 ## Local Setup
@@ -52,7 +52,7 @@ Expected locations:
 - Project-level checkpoints:
   - `models/`
 - Optional depth checkpoints for safety:
-  - `DBR/thirdparty/Depth-Anything-V2/checkpoints/`
+  - `third_party/Depth-Anything-V2/checkpoints/`
 
 ### 4. Verify the workspace
 
