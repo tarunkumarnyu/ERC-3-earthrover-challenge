@@ -33,7 +33,7 @@ corridor}. The system we will use is:
   \item a \textbf{graph of reference images and recorded transitions} to represent the corridor,
   \item \textbf{SuperPoint/SuperGlue-style geometric verification} to reject weak matches,
   \item \textbf{graph planning} to choose the next nearby target place,
-  \item \textbf{MBRA} to drive locally from the current view to that nearby target image,
+  \item a \textbf{validated online local controller} to drive from the current view to that nearby target image,
   \item a separate \textbf{safety and checkpoint verification layer}.
 \end{itemize}
 \end{mdframed}
@@ -162,7 +162,10 @@ motion connected one place to the next.
 
 A learned visual controller that takes recent observation images and a goal image
 and predicts short-horizon motion.
-For us, it should be used only for \textbf{local movement to a nearby subgoal}.
+
+In the MBRA paper/codebase, its primary role is the \textbf{short-horizon expert
+used for relabeling or annotation}. The deployed-policy side of that project is
+\textbf{LogoNav}.
 
 
 \section{What The CosPlace + SuperGlue Code Already Does}
@@ -201,7 +204,7 @@ a query/localization workflow.
   \item live EarthRover SDK runtime,
   \item real-time command loop,
   \item multi-checkpoint mission execution,
-  \item MBRA integration,
+  \item selection and validation of the final online local controller,
   \item safety override,
   \item recovery behavior if localization becomes uncertain.
 \end{itemize}
@@ -223,7 +226,7 @@ The complete system has five parts:
 \begin{enumerate}[nosep]
   \item perception / localization,
   \item planning,
-  \item MBRA control,
+  \item online local control,
   \item safety,
   \item checkpoint verification and recovery.
 \end{enumerate}
@@ -254,7 +257,7 @@ During competition/runtime, the robot repeatedly does this:
   \item localize in the corridor graph,
   \item plan path to the current checkpoint target node,
   \item choose the next nearby subgoal node,
-  \item give that subgoal image to MBRA,
+  \item give that subgoal image to the chosen online controller,
   \item get a local control command,
   \item run safety checks,
   \item send safe command to the rover,
@@ -336,11 +339,10 @@ turned from notebook-style analysis code into a \textbf{live runtime module}.
 
 \textbf{Important rule:}
 
-The clean starting point is for planning to give MBRA a \textbf{nearby graph-node image}.
+The clean starting point is for planning to give the online controller a \textbf{nearby graph-node image}.
 If someone proposes a stronger alternative, it should be evaluated against this baseline on the real corridor.
 
-
-\subsection{3. MBRA Control Stack}
+\subsection{3. Online Local Control Stack}
 
 \textbf{Job:} move from the current camera view to the next nearby graph-node image.
 
@@ -350,7 +352,7 @@ If someone proposes a stronger alternative, it should be evaluated against this 
   \item recent camera frames,
   \item current subgoal image from the planner,
   \item past command history,
-  \item delay-related inputs if needed by the model.
+  \item delay-related inputs if needed by the chosen controller.
 \end{itemize}
 
 \textbf{What it does step by step:}
@@ -358,8 +360,8 @@ If someone proposes a stronger alternative, it should be evaluated against this 
 \begin{enumerate}[nosep]
   \item collect the recent visual context,
   \item package the current subgoal image,
-  \item run MBRA inference,
-  \item convert MBRA output into rover linear/angular commands,
+  \item run the chosen online controller,
+  \item convert controller output into rover linear/angular commands,
   \item smooth or limit commands if needed.
 \end{enumerate}
 
@@ -371,8 +373,20 @@ If someone proposes a stronger alternative, it should be evaluated against this 
 
 \textbf{Important boundary:}
 
-MBRA is not the full navigation system.
-It is the \textbf{local image-goal controller} between nearby nodes.
+The online local controller is not the full navigation system.
+It is only the short-horizon movement module between nearby nodes.
+
+\textbf{Important clarification about MBRA / LogoNav}
+
+\begin{itemize}[nosep]
+  \item In the paper, \textbf{MBRA} is mainly the short-horizon expert used for relabeling.
+  \item \textbf{LogoNav} is the deployed-policy side of that project.
+  \item In this repo, the provided deployment scripts are for \textbf{LogoNav}, not for an indoor image-goal MBRA controller.
+  \item LogoNav here is GPS/pose-conditioned, so it is not a drop-in indoor image-goal controller.
+\end{itemize}
+
+So one of the current engineering tasks is to determine what the actual online
+local controller will be for this indoor stack.
 
 
 \subsection{4. Safety Stack}
@@ -383,7 +397,7 @@ It is the \textbf{local image-goal controller} between nearby nodes.
 
 \begin{itemize}[nosep]
   \item current camera frame,
-  \item MBRA proposed command,
+  \item proposed local-control command,
   \item optional depth/clearance estimate,
   \item optional pedestrian detector,
   \item localization confidence.
@@ -438,7 +452,7 @@ It is the \textbf{local image-goal controller} between nearby nodes.
 Camera frame $\rightarrow$
 Perception says current node/confidence $\rightarrow$
 Planner chooses path and nearby subgoal $\rightarrow$
-MBRA proposes local command $\rightarrow$
+online controller proposes local command $\rightarrow$
 Safety accepts/modifies/rejects command $\rightarrow$
 Robot moves $\rightarrow$
 Checkpoint verifier decides whether to advance mission state
@@ -450,7 +464,7 @@ Checkpoint verifier decides whether to advance mission state
 \begin{itemize}[nosep]
   \item Perception says where we are in the corridor graph.
   \item Planning says which nearby graph node we should move toward next.
-  \item MBRA says how to move locally toward that node image.
+  \item The online controller says how to move locally toward that node image.
   \item Safety says whether that movement is safe enough to execute.
   \item Checkpoint verification says whether the current checkpoint is complete.
 \end{itemize}
@@ -479,7 +493,7 @@ Because even in a known corridor, our real runtime still has:
 ORB-SLAM3 can still be tested, but it should not replace a corridor-specific
 CosPlace + graph baseline unless it proves clearly better on our real data.
 
-\subsection*{Why not retrieval-only without MBRA?}
+\subsection*{Why not retrieval-only without a local controller?}
 
 Because retrieval tells us \textbf{which place looks similar}, but it does not
 by itself provide a strong short-horizon controller under delay and low frame rate.
@@ -511,7 +525,7 @@ by itself provide a strong short-horizon controller under delay and low frame ra
 Even with a known corridor, these are the main remaining risks:
 
 \begin{enumerate}[nosep]
-  \item MBRA fails to follow a nearby subgoal cleanly.
+  \item The chosen online controller fails to follow a nearby subgoal cleanly.
   \item Node switching becomes unstable in visually repetitive areas.
   \item Checkpoint verification declares success too early.
   \item Bright doorway / reflective floor causes bad visual matching.
@@ -528,7 +542,7 @@ Even with a known corridor, these are the main remaining risks:
 \midrule
 Perception & Turn the CosPlace + SuperGlue corridor code into a live localization module & Current-node estimate, confidence score, candidate matches, runtime localization API \\
 Planning & Build path query and sequential checkpoint logic on the graph & Target-node lookup, path planner, subgoal selector, mission state logic \\
-Control & Make MBRA work as a local controller on the rover & MBRA input pipeline, local command generation, smoothing / limits \\
+Control & Select and validate the online local controller on the rover & Controller input pipeline, local command generation, smoothing / limits \\
 Safety & Prevent unsafe motion at runtime & Slow/stop logic, pedestrian-aware checks, confidence-aware speed limiting \\
 Checkpoint / Recovery & Decide when a checkpoint is really reached and what to do when uncertain & Goal verifier, recovery state logic, relocalization behavior \\
 Integration & Connect everything end-to-end with the SDK & One full runnable ERC indoor loop \\
@@ -543,8 +557,9 @@ Testing & Repeated corridor experiments and tuning & Metrics, debug plots, thres
   \item Reuse the existing CosPlace + SuperGlue corridor code directly.
   \item Clean it up into reusable modules instead of notebook-style code.
   \item Validate live localization on the exact corridor.
-  \item Validate MBRA on nearby graph-node subgoals.
-  \item Integrate planner $\rightarrow$ subgoal $\rightarrow$ MBRA.
+  \item Determine which online local controller is actually deployable.
+  \item Validate that controller on nearby graph-node subgoals.
+  \item Integrate planner $\rightarrow$ subgoal $\rightarrow$ controller.
   \item Add safety and checkpoint verification.
   \item Add recovery behavior.
   \item Then run full multi-checkpoint tests.
@@ -569,7 +584,7 @@ Improvements are welcome, but the standard should be clear:
 \begin{itemize}[nosep]
   \item The \textbf{CosPlace + SuperGlue corridor-localization pipeline} is the real baseline for perception and planning.
   \item The main new work is \textbf{runtime integration around that baseline}.
-  \item MBRA is the \textbf{local controller}, not the whole navigation stack.
+  \item The \textbf{online local controller} still has to be selected and validated carefully.
   \item Safety, checkpoint verification, and recovery must be separate modules.
   \item The biggest risk is \textbf{runtime stability on the real robot}, not lack of architecture ideas.
 \end{itemize}

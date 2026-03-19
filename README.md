@@ -8,7 +8,7 @@ This directory is meant to be pushed, cloned, and worked on as its own project. 
 
 - `docs/`: indoor competition notes, strategy, and team planning documents.
 - `earth-rovers-sdk/`: FrodoBots / EarthRover browser + FastAPI bridge.
-- `mbra_repo/`: MBRA / LogoNav research and deployment code used as the local-controller reference.
+- `mbra_repo/`: MBRA / LogoNav research code. MBRA is the relabeling expert from the paper; LogoNav is the deployed-policy side of that codebase.
 - `src/`: shared runtime modules copied for this project, including rover interface and safety helpers.
 - `third_party/Depth-Anything-V2/`: vendored depth-estimation dependency for optional runtime safety.
 - `models/`: local checkpoint location for project-specific model files.
@@ -47,7 +47,7 @@ This repo contains code and weight directories, but not the actual large checkpo
 
 Expected locations:
 
-- MBRA / LogoNav deployment weights:
+- MBRA / LogoNav experiment and deployment weights:
   - `mbra_repo/deployment/model_weights/`
 - Project-level checkpoints:
   - `models/`
@@ -83,7 +83,7 @@ This workspace should be treated as a standalone project.
 ## Current Intended Stack
 
 - Global navigation: topological graph + visual localization
-- Local control: MBRA as a short-horizon controller only
+- Local control: a validated online short-horizon controller, with MBRA / LogoNav as the main research reference
 - Safety: conservative override layer, optionally with depth and pedestrian checks
 - Goal completion: separate image-based checkpoint verification
 
