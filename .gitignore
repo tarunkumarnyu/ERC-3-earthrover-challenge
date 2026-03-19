@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# OS / editor noise
+.DS_Store
+
+# Local secrets / machine-specific config
+earth-rovers-sdk/.env
+
+# Runtime outputs
+*.log
+*.out
+earth-rovers-sdk/screenshots/
+
+# Generated baseline artifacts and experiment outputs
+artifacts/
+outputs/
+runs/
+data/
+recordings/
+*.npz
+*.npy
+*.mp4
+*.gif
+
+# Model weights and large local assets
+models/*
+!models/README.md
+*.pth
+*.pt
+*.ckpt
+DBR/thirdparty/Depth-Anything-V2/checkpoints/
+mbra_repo/deployment/model_weights/*
+!mbra_repo/deployment/model_weights/
+!mbra_repo/deployment/model_weights/README.md
