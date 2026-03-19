@@ -6,7 +6,6 @@ This directory is meant to be pushed, cloned, and worked on as its own project. 
 
 ## What Is In Here
 
-- `docs/`: indoor competition notes, strategy, and team planning documents.
 - `earth-rovers-sdk/`: FrodoBots / EarthRover browser + FastAPI bridge.
 - `mbra_repo/`: MBRA / LogoNav research code. MBRA is the relabeling expert from the paper; LogoNav is the deployed-policy side of that codebase.
 - `src/`: shared runtime modules copied for this project, including rover interface and safety helpers.
