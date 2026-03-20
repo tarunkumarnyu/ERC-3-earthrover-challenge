@@ -332,8 +332,9 @@ def build_action_edges_from_json(
 ) -> list[tuple[int, int, list[str]]]:
     action_edges: list[tuple[int, int, list[str]]] = []
     steps = sorted(step_to_image)
+    retained_steps = [step for step in steps if image_to_node.get(step_to_image.get(step, "")) is not None]
 
-    for current_step, next_step in zip(steps[:-1], steps[1:]):
+    for current_step, next_step in zip(retained_steps[:-1], retained_steps[1:]):
         image_current = step_to_image.get(current_step)
         image_next = step_to_image.get(next_step)
         if image_current is None or image_next is None:
@@ -344,11 +345,15 @@ def build_action_edges_from_json(
         if node_u is None or node_v is None:
             continue
 
-        actions = step_to_action.get(current_step, [])
+        actions: list[str] = []
+        for step in steps:
+            if current_step <= step < next_step:
+                actions.extend(step_to_action.get(step, []))
+
         if not actions:
             continue
 
-        action_edges.append((node_u, node_v, list(actions)))
+        action_edges.append((node_u, node_v, actions))
 
     return action_edges
 
@@ -369,9 +374,22 @@ def attach_actions_to_graph(graph: nx.Graph, action_edges: list[tuple[int, int, 
 
 
 def save_json(path: Path, payload: dict) -> None:
+    def to_builtin(value):
+        if isinstance(value, dict):
+            return {str(k): to_builtin(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [to_builtin(v) for v in value]
+        if isinstance(value, tuple):
+            return [to_builtin(v) for v in value]
+        if isinstance(value, np.ndarray):
+            return to_builtin(value.tolist())
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
+        json.dump(to_builtin(payload), handle, indent=2)
 
 
 def save_graph(path: Path, graph: nx.Graph | nx.DiGraph) -> None:
