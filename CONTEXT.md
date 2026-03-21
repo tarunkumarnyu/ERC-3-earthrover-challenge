@@ -54,12 +54,23 @@ The current baseline is:
 8. `src/earthrover_interface.py`
    - live robot interface for front camera, telemetry, orientation, and IMU data
 
-9. `src/depth_estimator.py` + `src/depth_safety.py`
+9. `src/sensor_state.py`
+   - lightweight motion-state filter
+   - smooths heading from orientation
+   - estimates turn rate from gyro z
+   - summarizes RPM motion hints
+   - provides a motion prior for localization/control
+
+10. `src/depth_estimator.py` + `src/depth_safety.py`
    - optional safety layer
 
-10. `mbra_repo/`
+11. `mbra_repo/`
    - research reference for MBRA / LogoNav
    - not yet the deployed indoor controller
+12. `src/mbra_controller.py`
+   - optional MBRA local-controller wrapper
+   - intended only for short-horizon subgoal following
+   - plugs into the same controller interface as the simple controller
 
 ## Important Conceptual Split
 
@@ -77,6 +88,7 @@ The project is:
 
 - `vision-primary`
 - with `IMU / heading support`
+- with a lightweight `motion-prior` layer
 
 Meaning:
 
@@ -85,6 +97,13 @@ Meaning:
   recovery, and controller smoothing
 - GPS is not part of the indoor backbone
 - RPM / encoder data should be used only if live data proves they are reliable
+
+Current implementation:
+
+- filtered heading is passed into localization and control
+- gyro z is used as a filtered turn-rate hint for the controller
+- RPM mean is used as a weak motion hint
+- this is intentionally a simple filter, not a full EKF backbone
 
 ## Current Data Assets
 
@@ -154,6 +173,11 @@ Contains:
    - `live_indoor_runtime.py`
    - CLI verified
    - defaults to dry-run for safety
+9. A lightweight motion filter now exists:
+   - `src/sensor_state.py`
+   - smooths heading from SDK orientation
+   - estimates turn rate from gyro z
+   - feeds a motion prior into localization/control
 
 
 ## How To Run After EarthRover Is Open
@@ -242,7 +266,7 @@ Recommended validation order:
 1. What is the actual online local controller for moving between nearby graph
    nodes after the simple baseline?
 2. How should IMU / heading support be integrated into runtime localization and
-   local control?
+   local control beyond the current lightweight filter?
 3. What recovery logic should run when localization confidence drops?
 
 ## Immediate Next Steps
@@ -258,7 +282,9 @@ Recommended validation order:
    - graph path / subgoal selection
    - local controller
    - safety
-6. Run `live_indoor_runtime.py` in dry-run mode against the SDK before sending
+6. Continue using the lightweight motion-prior layer instead of jumping to a
+   full EKF unless real tests prove we need more.
+7. Run `live_indoor_runtime.py` in dry-run mode against the SDK before sending
    any real commands.
 
 ## Files That Matter Most Right Now
@@ -269,6 +295,7 @@ Recommended validation order:
 - `src/graph_planner.py`
 - `src/navigation_runtime.py`
 - `src/local_controller.py`
+- `src/sensor_state.py`
 - `live_indoor_runtime.py`
 - `src/earthrover_interface.py`
 - `tools/extract_h5_dataset.py`
@@ -303,3 +330,64 @@ Why:
   `corridor_localizer -> graph_planner -> navigation_runtime -> local_controller`
 - the remaining major unknown is whether MBRA should replace or augment the
   simple local controller, not whether the graph-localization backbone is sound
+
+## Literature Sanity Check
+
+The current high-level direction is aligned with how repeated-route visual
+navigation is commonly approached in the literature.
+
+What matches known successful approaches:
+
+- topological place-based localization instead of forcing monocular SLAM to be
+  the whole backbone
+- known-environment / repeated-route memory built from prior traversals
+- temporal filtering on top of visual place recognition
+- graph or hop-based planning from current place to a nearby subgoal
+
+This is consistent with:
+
+- PlaceNav-style visual place recognition + filtering for topological
+  navigation
+- visual teach-and-repeat style systems that reuse a taught route and image
+  registration rather than rebuilding full metric geometry every time
+- RoboHop-style topological planning by moving through local place/segment
+  subgoals
+
+So the main architectural choice is not a blunder.
+
+The part that is currently weak compared to recommended practice is the
+controller/runtime layer:
+
+- the simple controller is still heuristic
+- runtime recovery is still basic
+- safety is not yet fully integrated
+- the graph is still effectively one-way in many cases
+
+Current conclusion:
+
+- localization/planning direction: good
+- controller/runtime direction: still needs serious improvement
+
+## MBRA Integration Status
+
+MBRA is now wired in conceptually as an optional local controller, not as a
+backbone rewrite.
+
+The intended role is:
+
+- current frame history + nearby subgoal image -> local motion command
+
+The MBRA path is exposed through:
+
+- `src/mbra_controller.py`
+- `live_indoor_runtime.py --controller mbra`
+
+Current blockers before MBRA can actually run:
+
+- MBRA Python dependencies are not fully installed in the active environment
+  (`efficientnet_pytorch` is currently missing)
+- MBRA weights are not present at
+  `mbra_repo/deployment/model_weights/mbra.pth`
+
+So MBRA is now in the right place architecturally, but it is not yet runnable
+in this environment.

@@ -17,6 +17,7 @@ earth-rovers-sdk/.env
 # Runtime outputs
 *.log
 *.out
+guide.md
 *.tex
 docs/
 earth-rovers-sdk/screenshots/

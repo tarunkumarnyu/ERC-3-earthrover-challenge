@@ -111,6 +111,7 @@ class NavigationRuntime:
             "localization": localization,
             "plan": plan,
             "controller_input": {
+                "observation_rgb": frame_rgb,
                 "current_node": plan["current_node"],
                 "current_step": plan["current_step"],
                 "current_orientation": localization.get("node_orientation"),
@@ -125,6 +126,8 @@ class NavigationRuntime:
                 "confidence": localization["confidence"],
                 "held_previous": localization["held_previous"],
                 "stable_steps": localization["stable_steps"],
+                "path_found": plan["path_found"],
+                "path_error": plan["path_error"],
             },
         }
 
@@ -150,6 +153,7 @@ class NavigationRuntime:
             "localization": localization,
             "plan": plan,
             "controller_input": {
+                "observation_rgb": frame_rgb,
                 "current_node": plan["current_node"],
                 "current_step": plan["current_step"],
                 "current_orientation": localization.get("node_orientation"),
@@ -166,5 +170,7 @@ class NavigationRuntime:
                 "stable_steps": localization["stable_steps"],
                 "checkpoint_reached": plan["checkpoint_reached"],
                 "next_active_checkpoint": next_target,
+                "path_found": plan["path_found"],
+                "path_error": plan["path_error"],
             },
         }

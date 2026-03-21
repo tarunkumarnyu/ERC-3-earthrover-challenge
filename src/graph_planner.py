@@ -60,7 +60,7 @@ class GraphPlanner:
     def _load_graph(self, path: Path) -> nx.Graph:
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
-        graph = json_graph.node_link_graph(data)
+        graph = json_graph.node_link_graph(data, edges="links")
         return graph
 
     def resolve_target_node(
@@ -112,12 +112,15 @@ class GraphPlanner:
             self.active_checkpoint_index += 1
         return self.get_active_checkpoint()
 
-    def shortest_path(self, current_node: int, target_node: int) -> list[int]:
+    def shortest_path(self, current_node: int, target_node: int) -> Optional[list[int]]:
         if current_node not in self.graph:
             raise KeyError(f"Current node {current_node} not in graph")
         if target_node not in self.graph:
             raise KeyError(f"Target node {target_node} not in graph")
-        path = nx.shortest_path(self.graph, source=current_node, target=target_node)
+        try:
+            path = nx.shortest_path(self.graph, source=current_node, target=target_node)
+        except nx.NetworkXNoPath:
+            return None
         return [int(node) for node in path]
 
     def choose_subgoal_node(self, path_nodes: list[int], hops_ahead: Optional[int] = None) -> int:
@@ -152,6 +155,24 @@ class GraphPlanner:
             target_image_name=target_image_name,
         )
         path_nodes = self.shortest_path(int(current_node), resolved_target)
+        if path_nodes is None:
+            return {
+                "current_node": int(current_node),
+                "current_step": self.node_to_step.get(int(current_node)),
+                "target_node": resolved_target,
+                "target_step": self.node_to_step.get(resolved_target),
+                "path_nodes": [],
+                "path_steps": [],
+                "subgoal_node": None,
+                "subgoal_step": None,
+                "subgoal_image_name": None,
+                "subgoal_image_path": None,
+                "subgoal_metadata": None,
+                "checkpoint_reached": False,
+                "path_found": False,
+                "path_error": f"no_path:{int(current_node)}->{resolved_target}",
+            }
+
         subgoal_node = self.choose_subgoal_node(path_nodes, hops_ahead=hops_ahead)
 
         return {
@@ -167,6 +188,8 @@ class GraphPlanner:
             "subgoal_image_path": self.node_to_path.get(subgoal_node),
             "subgoal_metadata": self.image_meta_by_name.get(self.node_to_name.get(subgoal_node, "")),
             "checkpoint_reached": self.checkpoint_reached(localization_result, resolved_target),
+            "path_found": True,
+            "path_error": None,
         }
 
     def plan_to_active_checkpoint(self, localization_result: dict, hops_ahead: Optional[int] = None) -> dict:

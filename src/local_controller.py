@@ -19,15 +19,27 @@ class ControlCommand:
 
 @dataclass
 class SimpleLocalControllerConfig:
-    max_linear: float = 0.35
-    min_linear: float = 0.08
-    max_angular: float = 0.6
-    heading_gain: float = 0.015
-    step_gain: float = 0.03
+    max_linear: float = 0.24
+    min_linear: float = 0.06
+    max_angular: float = 0.34
+    min_turn_angular: float = 0.12
+    heading_gain: float = 0.010
+    drive_heading_gain: float = 0.007
+    step_gain: float = 0.02
     confidence_stop_threshold: float = 0.35
     confidence_slow_threshold: float = 0.6
-    turn_in_place_threshold_deg: float = 30.0
+    align_enter_threshold_deg: float = 32.0
+    align_exit_threshold_deg: float = 12.0
+    slow_heading_threshold_deg: float = 20.0
+    hard_turn_threshold_deg: float = 55.0
     held_previous_linear_scale: float = 0.5
+    heading_filter_alpha: float = 0.35
+    angular_rate_limit: float = 0.10
+    low_confidence_linear_scale: float = 0.7
+    turn_rate_damping_gain: float = 0.004
+    high_turn_rate_threshold_dps: float = 20.0
+    high_turn_rate_linear_scale: float = 0.55
+    rpm_motion_threshold: float = 2.0
 
 
 class SimpleLocalController:
@@ -38,12 +50,31 @@ class SimpleLocalController:
 
     def __init__(self, config: SimpleLocalControllerConfig):
         self.config = config
+        self._align_mode = False
+        self._filtered_heading_error = 0.0
+        self._previous_angular = 0.0
+
+    def _smooth_heading_error(self, heading_error: float) -> float:
+        alpha = self.config.heading_filter_alpha
+        self._filtered_heading_error = (
+            alpha * heading_error + (1.0 - alpha) * self._filtered_heading_error
+        )
+        return self._filtered_heading_error
+
+    def _rate_limit_angular(self, desired_angular: float) -> float:
+        delta = desired_angular - self._previous_angular
+        max_delta = self.config.angular_rate_limit
+        if delta > max_delta:
+            desired_angular = self._previous_angular + max_delta
+        elif delta < -max_delta:
+            desired_angular = self._previous_angular - max_delta
+        self._previous_angular = desired_angular
+        return desired_angular
 
     def compute_command(
         self,
         controller_input: dict,
         observation_heading_deg: Optional[float] = None,
-        frame_rgb: Optional[object] = None,
     ) -> ControlCommand:
         confidence = float(controller_input.get("confidence", 0.0))
         current_step = controller_input.get("current_step")
@@ -51,52 +82,83 @@ class SimpleLocalController:
         current_orientation = controller_input.get("current_orientation")
         subgoal_orientation = controller_input.get("subgoal_orientation")
         held_previous = bool(controller_input.get("held_previous", False))
+        heading_rate_dps = float(controller_input.get("heading_rate_dps", 0.0) or 0.0)
+        rpm_mean = float(controller_input.get("rpm_mean", 0.0) or 0.0)
 
         if confidence < self.config.confidence_stop_threshold:
+            self._align_mode = False
             return ControlCommand(0.0, 0.0, "low_confidence_stop")
 
         if current_step is None or subgoal_step is None:
+            self._align_mode = False
             return ControlCommand(0.0, 0.0, "missing_step_info")
 
         step_gap = int(subgoal_step) - int(current_step)
         if step_gap <= 0:
+            self._align_mode = False
             return ControlCommand(0.0, 0.0, "subgoal_reached_or_behind")
 
         heading_reference = observation_heading_deg
         if heading_reference is None:
             heading_reference = current_orientation
 
-        heading_error = 0.0
-        if heading_reference is not None and subgoal_orientation is not None:
-            heading_error = wrap_angle_deg(float(subgoal_orientation) - float(heading_reference))
+        if heading_reference is None or subgoal_orientation is None:
+            self._align_mode = False
+            linear = min(
+                self.config.max_linear * 0.5,
+                self.config.min_linear + self.config.step_gain * max(1, step_gap),
+            )
+            if confidence < self.config.confidence_slow_threshold:
+                linear *= self.config.low_confidence_linear_scale
+            if held_previous:
+                linear *= self.config.held_previous_linear_scale
+            self._previous_angular = 0.0
+            return ControlCommand(max(0.0, linear), 0.0, "no_heading_forward_crawl")
 
-        angular = self.config.heading_gain * heading_error
-        angular = max(-self.config.max_angular, min(self.config.max_angular, angular))
+        raw_heading_error = wrap_angle_deg(float(subgoal_orientation) - float(heading_reference))
+        heading_error = self._smooth_heading_error(raw_heading_error)
 
-        linear = min(
+        if self._align_mode:
+            self._align_mode = abs(heading_error) > self.config.align_exit_threshold_deg
+        else:
+            self._align_mode = abs(heading_error) > self.config.align_enter_threshold_deg
+
+        if self._align_mode:
+            angular = self.config.heading_gain * heading_error
+            if abs(heading_error) > 1e-6 and abs(angular) < self.config.min_turn_angular:
+                angular = self.config.min_turn_angular * (1.0 if heading_error > 0 else -1.0)
+            angular -= self.config.turn_rate_damping_gain * heading_rate_dps
+            angular = max(-self.config.max_angular, min(self.config.max_angular, angular))
+            angular = self._rate_limit_angular(angular)
+            return ControlCommand(0.0, angular, "align_heading")
+
+        desired_linear = min(
             self.config.max_linear,
             self.config.min_linear + self.config.step_gain * max(1, step_gap),
         )
+        heading_scale = 1.0
+        if abs(heading_error) > self.config.slow_heading_threshold_deg:
+            overflow = min(
+                1.0,
+                (abs(heading_error) - self.config.slow_heading_threshold_deg)
+                / max(1.0, self.config.hard_turn_threshold_deg - self.config.slow_heading_threshold_deg),
+            )
+            heading_scale = max(0.25, 1.0 - 0.75 * overflow)
 
-        if abs(heading_error) >= self.config.turn_in_place_threshold_deg:
-            linear = 0.0
-        elif confidence < self.config.confidence_slow_threshold:
-            linear *= 0.6
+        linear = desired_linear * heading_scale
+        angular = self.config.drive_heading_gain * heading_error
+        angular -= self.config.turn_rate_damping_gain * heading_rate_dps
+        angular = max(-self.config.max_angular * 0.7, min(self.config.max_angular * 0.7, angular))
 
+        if confidence < self.config.confidence_slow_threshold:
+            linear *= self.config.low_confidence_linear_scale
+        if abs(heading_rate_dps) > self.config.high_turn_rate_threshold_dps:
+            linear *= self.config.high_turn_rate_linear_scale
+        if 0.0 < rpm_mean < self.config.rpm_motion_threshold:
+            linear *= 0.8
         if held_previous:
             linear *= self.config.held_previous_linear_scale
 
+        angular = self._rate_limit_angular(angular)
         linear = max(0.0, min(self.config.max_linear, linear))
-        return ControlCommand(linear=linear, angular=angular, reason="simple_heading_controller")
-
-# class MBRALocalController(SimpleLocalController):
-#     """A simple local controller that also considers the previous action."""
-
-#     def compute_command(
-#         self,
-#         controller_input: dict,
-#         observation_heading_deg: Optional[float] = None,
-#     ) -> ControlCommand:
-#         command = super().compute_command(controller_input, observation_heading_deg=observation_heading_deg)
-#         # Here you could add additional logic to modify the command based on previous actions or other factors.
-#         return command
+        return ControlCommand(linear=linear, angular=angular, reason="drive_to_subgoal")
