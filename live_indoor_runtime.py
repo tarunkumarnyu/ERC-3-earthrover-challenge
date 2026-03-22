@@ -219,6 +219,7 @@ def main() -> int:
                 "linear": command.linear,
                 "angular": command.angular,
                 "reason": command.reason,
+                "debug": command.debug or {},
                 "sent": sent,
             }
 
@@ -232,9 +233,11 @@ def main() -> int:
                     f"[{iteration:04d}] cur={payload['current_step']} "
                     f"target={payload['target_step']} subgoal={payload['subgoal_step']} "
                     f"conf={payload['confidence']:.3f} "
+                    f"hdg={payload['heading_deg'] if payload['heading_deg'] is not None else 'NA'} "
                     f"cmd=({payload['linear']:.3f}, {payload['angular']:.3f}) "
                     f"reason={payload['reason']} sent={payload['sent']}"
                     f"{path_error_suffix}"
+                    f"{'' if not payload['debug'] else ' dbg=' + json.dumps(payload['debug'], sort_keys=True)}"
                 )
 
             elapsed = time.time() - loop_start

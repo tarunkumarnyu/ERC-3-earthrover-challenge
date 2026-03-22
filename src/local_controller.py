@@ -15,6 +15,7 @@ class ControlCommand:
     linear: float
     angular: float
     reason: str
+    debug: Optional[dict] = None
 
 
 @dataclass
@@ -23,6 +24,7 @@ class SimpleLocalControllerConfig:
     min_linear: float = 0.06
     max_angular: float = 0.34
     min_turn_angular: float = 0.12
+    align_turn_angular: float = 0.22
     heading_gain: float = 0.010
     drive_heading_gain: float = 0.007
     step_gain: float = 0.02
@@ -40,6 +42,10 @@ class SimpleLocalControllerConfig:
     high_turn_rate_threshold_dps: float = 20.0
     high_turn_rate_linear_scale: float = 0.55
     rpm_motion_threshold: float = 2.0
+    motion_stale_stop: bool = True
+    no_progress_realign_ticks: int = 4
+    no_progress_crawl_linear_scale: float = 0.5
+    step_progress_epsilon: int = 1
 
 
 class SimpleLocalController:
@@ -53,6 +59,9 @@ class SimpleLocalController:
         self._align_mode = False
         self._filtered_heading_error = 0.0
         self._previous_angular = 0.0
+        self._last_current_step: Optional[int] = None
+        self._no_progress_ticks = 0
+        self._turn_direction = 1.0
 
     def _smooth_heading_error(self, heading_error: float) -> float:
         alpha = self.config.heading_filter_alpha
@@ -71,6 +80,18 @@ class SimpleLocalController:
         self._previous_angular = desired_angular
         return desired_angular
 
+    def _update_progress_state(self, current_step: int) -> None:
+        if self._last_current_step is None:
+            self._last_current_step = current_step
+            self._no_progress_ticks = 0
+            return
+
+        if current_step >= self._last_current_step + self.config.step_progress_epsilon:
+            self._no_progress_ticks = 0
+        else:
+            self._no_progress_ticks += 1
+        self._last_current_step = current_step
+
     def compute_command(
         self,
         controller_input: dict,
@@ -84,19 +105,26 @@ class SimpleLocalController:
         held_previous = bool(controller_input.get("held_previous", False))
         heading_rate_dps = float(controller_input.get("heading_rate_dps", 0.0) or 0.0)
         rpm_mean = float(controller_input.get("rpm_mean", 0.0) or 0.0)
+        motion_state_stale = bool(controller_input.get("motion_state_stale", False))
 
         if confidence < self.config.confidence_stop_threshold:
             self._align_mode = False
-            return ControlCommand(0.0, 0.0, "low_confidence_stop")
+            return ControlCommand(0.0, 0.0, "low_confidence_stop", debug={"confidence": confidence})
 
         if current_step is None or subgoal_step is None:
             self._align_mode = False
-            return ControlCommand(0.0, 0.0, "missing_step_info")
+            return ControlCommand(0.0, 0.0, "missing_step_info", debug={"confidence": confidence})
 
         step_gap = int(subgoal_step) - int(current_step)
         if step_gap <= 0:
             self._align_mode = False
-            return ControlCommand(0.0, 0.0, "subgoal_reached_or_behind")
+            return ControlCommand(0.0, 0.0, "subgoal_reached_or_behind", debug={"step_gap": step_gap})
+
+        self._update_progress_state(int(current_step))
+
+        if motion_state_stale and self.config.motion_stale_stop:
+            self._align_mode = False
+            return ControlCommand(0.0, 0.0, "stale_motion_state_stop", debug={"step_gap": step_gap})
 
         heading_reference = observation_heading_deg
         if heading_reference is None:
@@ -113,7 +141,16 @@ class SimpleLocalController:
             if held_previous:
                 linear *= self.config.held_previous_linear_scale
             self._previous_angular = 0.0
-            return ControlCommand(max(0.0, linear), 0.0, "no_heading_forward_crawl")
+            return ControlCommand(
+                max(0.0, linear),
+                0.0,
+                "no_heading_forward_crawl",
+                debug={
+                    "step_gap": step_gap,
+                    "confidence": confidence,
+                    "no_progress_ticks": self._no_progress_ticks,
+                },
+            )
 
         raw_heading_error = wrap_angle_deg(float(subgoal_orientation) - float(heading_reference))
         heading_error = self._smooth_heading_error(raw_heading_error)
@@ -123,14 +160,32 @@ class SimpleLocalController:
         else:
             self._align_mode = abs(heading_error) > self.config.align_enter_threshold_deg
 
+        if self._no_progress_ticks >= self.config.no_progress_realign_ticks and abs(heading_error) > self.config.align_exit_threshold_deg:
+            self._align_mode = True
+
         if self._align_mode:
-            angular = self.config.heading_gain * heading_error
-            if abs(heading_error) > 1e-6 and abs(angular) < self.config.min_turn_angular:
-                angular = self.config.min_turn_angular * (1.0 if heading_error > 0 else -1.0)
+            if abs(heading_error) > self.config.align_enter_threshold_deg:
+                self._turn_direction = 1.0 if heading_error >= 0 else -1.0
+            angular_mag = self.config.align_turn_angular
+            if abs(heading_error) > self.config.hard_turn_threshold_deg:
+                angular_mag = self.config.max_angular
+            angular = angular_mag * self._turn_direction
             angular -= self.config.turn_rate_damping_gain * heading_rate_dps
             angular = max(-self.config.max_angular, min(self.config.max_angular, angular))
             angular = self._rate_limit_angular(angular)
-            return ControlCommand(0.0, angular, "align_heading")
+            return ControlCommand(
+                0.0,
+                angular,
+                "align_heading",
+                debug={
+                    "raw_heading_error_deg": raw_heading_error,
+                    "filtered_heading_error_deg": heading_error,
+                    "heading_rate_dps": heading_rate_dps,
+                    "step_gap": step_gap,
+                    "no_progress_ticks": self._no_progress_ticks,
+                    "align_mode": self._align_mode,
+                },
+            )
 
         desired_linear = min(
             self.config.max_linear,
@@ -156,9 +211,24 @@ class SimpleLocalController:
             linear *= self.config.high_turn_rate_linear_scale
         if 0.0 < rpm_mean < self.config.rpm_motion_threshold:
             linear *= 0.8
+        if self._no_progress_ticks >= self.config.no_progress_realign_ticks:
+            linear *= self.config.no_progress_crawl_linear_scale
         if held_previous:
             linear *= self.config.held_previous_linear_scale
 
         angular = self._rate_limit_angular(angular)
         linear = max(0.0, min(self.config.max_linear, linear))
-        return ControlCommand(linear=linear, angular=angular, reason="drive_to_subgoal")
+        return ControlCommand(
+            linear=linear,
+            angular=angular,
+            reason="drive_to_subgoal",
+            debug={
+                "raw_heading_error_deg": raw_heading_error,
+                "filtered_heading_error_deg": heading_error,
+                "heading_rate_dps": heading_rate_dps,
+                "step_gap": step_gap,
+                "no_progress_ticks": self._no_progress_ticks,
+                "align_mode": self._align_mode,
+                "rpm_mean": rpm_mean,
+            },
+        )
