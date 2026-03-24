@@ -100,11 +100,18 @@ class DepthEstimator:
     def _find_checkpoint(self, model_size):
         """Search for checkpoint file in common locations."""
         base_dir = os.path.join(os.path.dirname(__file__), '..')
+        ckpt_dir = os.path.join(base_dir, 'third_party', 'Depth-Anything-V2', 'checkpoints')
+        # Map model_size → ViT encoder suffix used in actual HuggingFace filenames
+        encoder_map = {'small': 'vits', 'base': 'vitb', 'large': 'vitl'}
+        enc = encoder_map.get(model_size, model_size)
         search_paths = [
-            os.path.join(base_dir, 'third_party', 'Depth-Anything-V2',
-                         'checkpoints', f'depth_anything_v2_metric_{model_size}.pth'),
-            os.path.join(base_dir, 'third_party', 'Depth-Anything-V2',
-                         'checkpoints', f'depth_anything_v2_{model_size}.pth'),
+            # Actual HuggingFace filenames (hypersim = indoor metric)
+            os.path.join(ckpt_dir, f'depth_anything_v2_metric_hypersim_{enc}.pth'),
+            os.path.join(ckpt_dir, f'depth_anything_v2_metric_vkitti_{enc}.pth'),
+            # Legacy / renamed variants
+            os.path.join(ckpt_dir, f'depth_anything_v2_metric_{model_size}.pth'),
+            os.path.join(ckpt_dir, f'depth_anything_v2_{model_size}.pth'),
+            os.path.join(ckpt_dir, f'depth_anything_v2_{enc}.pth'),
             os.path.join(base_dir, 'models', f'depth_anything_v2_{model_size}.pth'),
         ]
 

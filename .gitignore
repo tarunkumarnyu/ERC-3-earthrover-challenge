@@ -22,6 +22,15 @@ guide.md
 docs/
 earth-rovers-sdk/screenshots/
 
+# Local handoff / working notes
+CONTEXT.md
+chat_handoff.md
+chat_session_reconstructed.md
+codex_handoff_prompt.md
+
+# Local extra clones / side worktrees
+nyu-earthrover-main/
+
 # Generated baseline artifacts and experiment outputs
 artifacts/
 outputs/

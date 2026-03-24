@@ -39,6 +39,13 @@ $(document).ready(function () {
       window.updateMarker(latitude, longitude);
     }
 
+    // Push sensor data to backend so Python runtime gets fresh data without pyppeteer polling
+    fetch("/api/update_data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(controls),
+    }).catch(() => {});
+
     console.log(
       "AgoraRTM peer msg from user " + peerId + " received: \n",
       controls

@@ -27,7 +27,7 @@ class SensorStateFilterConfig:
     heading_alpha: float = 0.35
     gyro_alpha: float = 0.30
     rpm_alpha: float = 0.30
-    stale_timeout_s: float = 1.0
+    stale_timeout_s: float = 5.0
 
 
 class SensorStateFilter:
@@ -39,12 +39,16 @@ class SensorStateFilter:
         self._filtered_heading_rate_dps: float = 0.0
         self._filtered_rpm_mean: float = 0.0
         self._last_update_ts: Optional[float] = None
+        self._last_sensor_timestamp: Optional[float] = None
+        self._last_fresh_data_wall_ts: Optional[float] = None
 
     def reset(self) -> None:
         self._filtered_heading_deg = None
         self._filtered_heading_rate_dps = 0.0
         self._filtered_rpm_mean = 0.0
         self._last_update_ts = None
+        self._last_sensor_timestamp = None
+        self._last_fresh_data_wall_ts = None
 
     def _latest_gyro_z(self, data: dict) -> Optional[float]:
         gyros = data.get("gyros") or []
@@ -82,8 +86,21 @@ class SensorStateFilter:
                 "heading_deg": self._filtered_heading_deg,
                 "heading_rate_dps": self._filtered_heading_rate_dps,
                 "rpm_mean": self._filtered_rpm_mean,
+                "sensor_timestamp": self._last_sensor_timestamp,
                 "is_stale": True,
             }
+
+        sensor_timestamp = data.get("timestamp")
+        try:
+            sensor_timestamp = None if sensor_timestamp is None else float(sensor_timestamp)
+        except (TypeError, ValueError):
+            sensor_timestamp = None
+
+        if sensor_timestamp is None:
+            self._last_fresh_data_wall_ts = now
+        elif self._last_sensor_timestamp is None or sensor_timestamp > self._last_sensor_timestamp:
+            self._last_sensor_timestamp = sensor_timestamp
+            self._last_fresh_data_wall_ts = now
 
         raw_orientation = data.get("orientation")
         try:
@@ -118,9 +135,9 @@ class SensorStateFilter:
             )
 
         self._last_update_ts = now
-        is_stale = False
-        if self._last_update_ts is not None:
-            is_stale = (now - self._last_update_ts) > self.config.stale_timeout_s
+        is_stale = True
+        if self._last_fresh_data_wall_ts is not None:
+            is_stale = (now - self._last_fresh_data_wall_ts) > self.config.stale_timeout_s
 
         return {
             "heading_deg": self._filtered_heading_deg,
@@ -128,5 +145,6 @@ class SensorStateFilter:
             "rpm_mean": self._filtered_rpm_mean,
             "raw_heading_deg": raw_heading_deg,
             "raw_gyro_z": gyro_z,
+            "sensor_timestamp": self._last_sensor_timestamp,
             "is_stale": is_stale,
         }

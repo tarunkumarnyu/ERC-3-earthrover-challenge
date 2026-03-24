@@ -69,6 +69,10 @@ class NavigationRuntime:
     def reset(self) -> None:
         self.localizer.reset()
 
+    def revert_localization(self) -> None:
+        """Undo the last localization update (used after jump rejection)."""
+        self.localizer.revert_last_update()
+
     def set_checkpoints(
         self,
         checkpoint_steps: Optional[list[int]] = None,
@@ -81,7 +85,16 @@ class NavigationRuntime:
             return None
         path = Path(subgoal_image_path)
         if not path.is_file():
-            return None
+            # Graph/database paths may be hardcoded to a different machine.
+            # Try to resolve relative to this repo by finding "data/" in the path.
+            path_str = str(path)
+            marker = "/data/"
+            idx = path_str.find(marker)
+            if idx >= 0:
+                repo_root = Path(__file__).resolve().parents[1]
+                path = repo_root / path_str[idx + 1:]  # e.g. "data/corrider_extracted/..."
+            if not path.is_file():
+                return None
         image = Image.open(path).convert("RGB")
         return np.array(image, dtype=np.uint8)
 

@@ -7,6 +7,7 @@ API that planning and integration code can call directly.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +54,7 @@ class CorridorLocalizer:
 
     def __init__(self, config: CorridorLocalizerConfig):
         self.config = config
-        self.device = get_device()
+        self.device = self._select_device()
         self.descriptor_config: DescriptorConfig = load_descriptor_config(config.database_npz)
         self.model = load_cosplace_model(config.cosplace_repo, self.descriptor_config, self.device)
         self.transform = make_cosplace_transform(self.descriptor_config)
@@ -92,8 +93,55 @@ class CorridorLocalizer:
             )
         )
 
+    def _select_device(self) -> torch.device:
+        requested_device = os.getenv("ERC_LOCALIZER_DEVICE")
+        if requested_device:
+            requested_device = requested_device.strip().lower()
+            if requested_device == "cuda" and not torch.cuda.is_available():
+                print("ERC_LOCALIZER_DEVICE=cuda requested, but CUDA is unavailable. Falling back to CPU.")
+                return torch.device("cpu")
+            return torch.device(requested_device)
+
+        device = get_device()
+        if device.type != "cuda":
+            return device
+
+        try:
+            major, minor = torch.cuda.get_device_capability(0)
+            arch_list = torch.cuda.get_arch_list()
+            supported = any(
+                int(a.split("_")[1][0]) <= major for a in arch_list if a.startswith("sm_")
+            )
+            if not supported:
+                print(
+                    "CUDA device capability "
+                    f"sm_{major}{minor} is not covered by arch list {arch_list}. "
+                    "Falling back to CPU for localization."
+                )
+                return torch.device("cpu")
+            # Smoke-test a small tensor op
+            t = torch.zeros(1, device="cuda:0")
+            del t
+        except Exception as exc:
+            print(f"Unable to validate CUDA device compatibility ({exc}). Falling back to CPU.")
+            return torch.device("cpu")
+
+        return device
+
+    def _move_model_to_device(self, device: torch.device) -> None:
+        if self.device.type == device.type:
+            return
+        self.device = device
+        self.model = self.model.to(self.device)
+        self.model.eval()
+        print(f"Corridor localizer switched to {self.device.type.upper()} inference.")
+
     def reset(self) -> None:
         self.temporal_localizer = TemporalLocalizer(self.temporal_localizer.config)
+
+    def revert_last_update(self) -> None:
+        """Undo the last localize call's effect on temporal state."""
+        self.temporal_localizer.revert_state()
 
     def preprocess_pil(self, image: Image.Image) -> torch.Tensor:
         image = image.convert("RGB")
@@ -106,10 +154,21 @@ class CorridorLocalizer:
         return tensor.unsqueeze(0)
 
     def encode_pil(self, image: Image.Image) -> np.ndarray:
-        tensor = self.preprocess_pil(image).to(self.device)
-        with torch.no_grad():
-            descriptor = self.model(tensor)
-            descriptor = torch.nn.functional.normalize(descriptor, p=2, dim=1)
+        tensor = self.preprocess_pil(image)
+        try:
+            tensor = tensor.to(self.device)
+            with torch.no_grad():
+                descriptor = self.model(tensor)
+                descriptor = torch.nn.functional.normalize(descriptor, p=2, dim=1)
+        except Exception as exc:
+            if self.device.type != "cuda":
+                raise
+            print(f"CUDA localization inference failed ({exc}). Retrying on CPU.")
+            self._move_model_to_device(torch.device("cpu"))
+            tensor = tensor.to(self.device)
+            with torch.no_grad():
+                descriptor = self.model(tensor)
+                descriptor = torch.nn.functional.normalize(descriptor, p=2, dim=1)
         return descriptor.cpu().numpy()[0].astype(np.float32)
 
     def localize_frame(
@@ -150,6 +209,7 @@ class CorridorLocalizer:
                 }
             )
 
+        self.temporal_localizer.save_state()
         temporal_state = self.temporal_localizer.update(
             candidate_rows,
             observation_heading=observation_heading_deg,

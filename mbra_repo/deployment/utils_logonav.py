@@ -18,22 +18,45 @@ import numpy as np
 from PIL import Image as PILImage
 from typing import List, Tuple, Dict, Optional
 
-# models
-from vint_train.models.gnm.gnm import GNM
-from vint_train.models.vint.vint import ViNT
-
-from vint_train.models.vint.vit import ViT
-from vint_train.models.nomad.nomad import NoMaD, DenseNetwork
-from vint_train.models.nomad.nomad_vint import NoMaD_ViNT, replace_bn_with_gn
-#from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
-from vint_train.data.data_utils import IMAGE_ASPECT_RATIO
-
-from vint_train.models.lelan.lelan import LeLaN_clip, LeLaN_clip_temp, DenseNetwork_lelan
-from vint_train.models.lelan.lelan_comp import LeLaN_clip_FiLM, LeLaN_clip_FiLM_temp
+# MBRA/ExAug and IL models (needed for this project)
 from vint_train.models.exaug.exaug import ExAug_dist_delay
 from vint_train.models.il.il import IL_dist, IL_gps
 
-import clip
+# Lazy imports for models not needed by MBRA/IL (avoid heavy transitive deps)
+IMAGE_ASPECT_RATIO = 4 / 3  # from vint_train.data.data_utils, avoid importing heavy module
+GNM = ViNT = ViT = NoMaD = DenseNetwork = NoMaD_ViNT = None
+replace_bn_with_gn = None
+clip = None
+LeLaN_clip = LeLaN_clip_temp = DenseNetwork_lelan = None
+LeLaN_clip_FiLM = LeLaN_clip_FiLM_temp = None
+
+
+def _load_lazy_models():
+    """Import heavy model deps on demand (GNM, ViNT, NoMaD, LeLaN)."""
+    global GNM, ViNT, ViT, NoMaD, DenseNetwork, NoMaD_ViNT, replace_bn_with_gn
+    global clip, LeLaN_clip, LeLaN_clip_temp, DenseNetwork_lelan
+    global LeLaN_clip_FiLM, LeLaN_clip_FiLM_temp, IMAGE_ASPECT_RATIO
+    if GNM is not None:
+        return
+    from vint_train.models.gnm.gnm import GNM as _GNM
+    from vint_train.models.vint.vint import ViNT as _ViNT
+    from vint_train.models.vint.vit import ViT as _ViT
+    from vint_train.models.nomad.nomad import NoMaD as _NoMaD, DenseNetwork as _DN
+    from vint_train.models.nomad.nomad_vint import NoMaD_ViNT as _NV, replace_bn_with_gn as _rbg
+    from vint_train.data.data_utils import IMAGE_ASPECT_RATIO as _IAR
+    GNM, ViNT, ViT = _GNM, _ViNT, _ViT
+    NoMaD, DenseNetwork, NoMaD_ViNT, replace_bn_with_gn = _NoMaD, _DN, _NV, _rbg
+    IMAGE_ASPECT_RATIO = _IAR
+    try:
+        import clip as _clip
+        clip = _clip
+        from vint_train.models.lelan.lelan import LeLaN_clip as _LC, LeLaN_clip_temp as _LCT, DenseNetwork_lelan as _DNL
+        from vint_train.models.lelan.lelan_comp import LeLaN_clip_FiLM as _LCF, LeLaN_clip_FiLM_temp as _LCFT
+        LeLaN_clip, LeLaN_clip_temp, DenseNetwork_lelan = _LC, _LCT, _DNL
+        LeLaN_clip_FiLM, LeLaN_clip_FiLM_temp = _LCF, _LCFT
+    except ImportError:
+        pass
+
 import cv2
 
 def load_model(
@@ -48,6 +71,10 @@ def load_model(
         model_type = "il2_gps"
     elif model_type == "MBRA":
         model_type = "exaug_dist_gnm_delay"
+
+    # Load heavy model deps on demand (GNM, ViNT, NoMaD, LeLaN) — not needed for MBRA/IL
+    if model_type not in ("exaug_dist_gnm_delay", "il_dist", "il2_gps"):
+        _load_lazy_models()
     
     if model_type == "gnm":
         model = GNM(

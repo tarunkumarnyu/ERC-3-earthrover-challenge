@@ -31,6 +31,9 @@ ENV_REQUIRED_KEYS = [
     "BOT_SLUG",
     "CHROME_EXECUTABLE_PATH",
     "MAP_ZOOM_LEVEL",
+]
+
+ENV_OPTIONAL_KEYS = [
     "MISSION_SLUG",
 ]
 
@@ -113,13 +116,26 @@ def main() -> int:
                 errors.append(f"missing .env key: {key}")
             elif is_placeholder(value):
                 errors.append(f".env key still looks like a placeholder: {key}")
+
+        for key in ENV_OPTIONAL_KEYS:
+            value = env_values.get(key)
+            if not value:
+                warnings.append(
+                    f"optional .env key not set: {key} "
+                    "(SDK can still run without it if you are not using mission mode)"
+                )
+            elif is_placeholder(value):
+                warnings.append(f"optional .env key still looks like a placeholder: {key}")
         ok.append("validated local SDK .env")
 
     mbra_weights = find_checkpoints(ROOT / "mbra_repo/deployment/model_weights")
     if mbra_weights:
         ok.append(f"found MBRA/LogoNav weights: {len(mbra_weights)} file(s)")
     else:
-        errors.append("no MBRA/LogoNav checkpoint found under mbra_repo/deployment/model_weights/")
+        warnings.append(
+            "no MBRA/LogoNav checkpoint found under mbra_repo/deployment/model_weights/ "
+            "(required only for --controller mbra)"
+        )
 
     project_weights = find_checkpoints(ROOT / "models")
     if project_weights:

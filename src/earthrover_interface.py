@@ -207,7 +207,11 @@ class EarthRoverInterface:
 
     def send_control(self, linear, angular, lamp=0):
         """
-        Send velocity command to the robot via JavaScript RTM relay.
+        Send velocity command to the robot.
+
+        Tries the browser-relay path (/control) first; if that fails, falls
+        back to the direct RTM path (/control-legacy) which doesn't depend on
+        a live browser/pyppeteer session.
 
         Args:
             linear: Forward/backward speed (-1 to 1)
@@ -222,24 +226,36 @@ class EarthRoverInterface:
         angular = max(-1.0, min(1.0, float(angular)))
         lamp = int(lamp)
 
+        payload = {
+            "command": {
+                "linear": linear,
+                "angular": angular,
+                "lamp": lamp
+            }
+        }
+
+        # Try browser-relay path first (lower latency when browser is alive)
         try:
-            # Use the new API endpoint that JavaScript polls
             response = requests.post(
-                f"{self.base_url}/api/set_control",
-                json={
-                    "command": {
-                        "linear": linear,
-                        "angular": angular,
-                        "lamp": lamp
-                    }
-                },
-                timeout=2.0  # Short timeout since this just sets a value
+                f"{self.base_url}/control",
+                json=payload,
+                timeout=1.0
             )
+            if response.status_code == 200:
+                return True
+        except Exception:
+            pass
 
+        # Fallback: direct RTM (no browser/pyppeteer dependency)
+        try:
+            response = requests.post(
+                f"{self.base_url}/control-legacy",
+                json=payload,
+                timeout=2.0
+            )
             return response.status_code == 200
-
         except Exception as e:
-            print(f"Error sending control: {e}")
+            print(f"Error sending control (both paths failed): {e}")
             return False
 
     def stop(self):

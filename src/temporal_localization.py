@@ -42,6 +42,21 @@ class TemporalLocalizer:
     def __init__(self, config: TemporalLocalizerConfig):
         self.config = config
         self.state = TemporalState()
+        self._prev_state: Optional[TemporalState] = None
+
+    def save_state(self) -> None:
+        """Snapshot current state so it can be reverted after a rejected jump."""
+        self._prev_state = TemporalState(
+            node_index=self.state.node_index,
+            confidence=self.state.confidence,
+            stable_steps=self.state.stable_steps,
+        )
+
+    def revert_state(self) -> None:
+        """Restore the snapshot saved by save_state()."""
+        if self._prev_state is not None:
+            self.state = self._prev_state
+            self._prev_state = None
 
     def _heading_cost(self, candidate_heading: Optional[float], observation_heading: Optional[float]) -> float:
         if candidate_heading is None or observation_heading is None:

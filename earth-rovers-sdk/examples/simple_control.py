@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
-"""Simple line-based manual control for EarthRover via /control-legacy.
+"""Simple EarthRover manual control.
 
-Examples:
+Default mode is live single-key control in the terminal:
+  w/a/s/d    -> motion burst
+  space/x    -> stop
+  q          -> quit
+
+Optional line mode preserves the old behavior:
   w        -> forward for default duration
-  a        -> left turn for default duration
-  d 1.2    -> right turn for 1.2 seconds
-  wa 0.5   -> forward-left for 0.5 seconds
-  x        -> stop
-  q        -> quit
+  a 0.5    -> left turn for 0.5 seconds
+  wa 0.6   -> forward-left for 0.6 seconds
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import select
+import sys
+import termios
 import time
+import tty
 
 import requests
 
@@ -28,8 +35,11 @@ COMMANDS = {
     "sa": (-0.20, 0.35),
     "sd": (-0.20, -0.35),
     "x": (0.0, 0.0),
+    " ": (0.0, 0.0),
     "stop": (0.0, 0.0),
 }
+
+BURST_KEYS = {"w", "a", "s", "d", "x", " "}
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +52,11 @@ def parse_args() -> argparse.Namespace:
         help="Seconds to send a motion command when duration is omitted.",
     )
     parser.add_argument("--hz", type=float, default=6.0, help="Command resend rate while moving.")
+    parser.add_argument(
+        "--line-mode",
+        action="store_true",
+        help="Use the older line-based command mode instead of live single-key control.",
+    )
     return parser.parse_args()
 
 
@@ -70,9 +85,18 @@ def send_for_duration(base_url: str, linear: float, angular: float, duration: fl
         time.sleep(min(period, remaining))
 
 
-def main() -> int:
-    args = parse_args()
+@contextlib.contextmanager
+def raw_terminal_mode() -> object:
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
+
+def run_line_mode(args: argparse.Namespace) -> int:
     print("Simple EarthRover Control")
     print("Commands: w s a d wa wd sa sd x(stop) q(quit)")
     print("Optional duration: e.g. 'w 1.0' or 'a 0.5'")
@@ -112,11 +136,61 @@ def main() -> int:
             send_for_duration(args.sdk_url, linear, angular, duration, args.hz)
             if (linear, angular) != (0.0, 0.0):
                 send_command(args.sdk_url, 0.0, 0.0)
-            print(
-                f"sent linear={linear:+.2f} angular={angular:+.2f} duration={duration:.2f}s"
-            )
+            print(f"sent linear={linear:+.2f} angular={angular:+.2f} duration={duration:.2f}s")
         except Exception as exc:
             print(f"error: {exc}")
+
+
+def run_live_mode(args: argparse.Namespace) -> int:
+    print("Simple EarthRover Live Control")
+    print("Press w/a/s/d for motion bursts, space or x to stop, q to quit.")
+    print(f"Each key sends for about {args.default_duration:.2f}s.")
+
+    try:
+        send_command(args.sdk_url, 0.0, 0.0)
+    except Exception as exc:
+        print(f"error: {exc}")
+        return 1
+
+    with raw_terminal_mode():
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if not ready:
+                continue
+            char = sys.stdin.read(1)
+            if not char:
+                continue
+            if char == "\x03":
+                char = "q"
+            char = char.lower()
+
+            if char == "q":
+                try:
+                    send_command(args.sdk_url, 0.0, 0.0)
+                except Exception:
+                    pass
+                print("\nStopped and exiting.")
+                return 0
+
+            if char not in BURST_KEYS:
+                continue
+
+            linear, angular = COMMANDS[char]
+            try:
+                send_for_duration(args.sdk_url, linear, angular, args.default_duration, args.hz)
+                if (linear, angular) != (0.0, 0.0):
+                    send_command(args.sdk_url, 0.0, 0.0)
+                label = "space" if char == " " else char
+                print(f"\rkey={label} sent linear={linear:+.2f} angular={angular:+.2f}      ", end="", flush=True)
+            except Exception as exc:
+                print(f"\nerror: {exc}")
+
+
+def main() -> int:
+    args = parse_args()
+    if args.line_mode:
+        return run_line_mode(args)
+    return run_live_mode(args)
 
 
 if __name__ == "__main__":

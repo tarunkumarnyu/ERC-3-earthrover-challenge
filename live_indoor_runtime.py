@@ -59,9 +59,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional ordered checkpoint steps for sequential execution.",
     )
-    parser.add_argument("--tick-hz", type=float, default=2.0, help="Loop frequency in Hz.")
+    parser.add_argument("--tick-hz", type=float, default=None, help="Loop frequency in Hz. Default: 3 for mbra, 2 for simple.")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max loop iterations.")
-    parser.add_argument("--max-subgoal-hops", type=int, default=3, help="Graph hops ahead for subgoal selection.")
+    parser.add_argument("--max-subgoal-hops", type=int, default=None, help="Graph hops ahead for subgoal selection. Default: 4 for mbra, 15 for simple.")
     parser.add_argument("--sdk-url", default="http://localhost:8000", help="EarthRover SDK base URL.")
     parser.add_argument("--sdk-timeout", type=float, default=5.0, help="SDK request timeout in seconds.")
     parser.add_argument("--send-control", action="store_true", help="Actually send commands to the robot.")
@@ -81,6 +81,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-on-low-confidence", action="store_true", help="Stop when localization confidence is too low.")
     parser.add_argument("--min-confidence", type=float, default=0.35, help="Low-confidence stop threshold.")
     parser.add_argument("--print-json", action="store_true", help="Print each loop state as JSON.")
+    parser.add_argument("--depth-safety", action="store_true", help="Enable monocular depth forward-clearance veto.")
+    parser.add_argument("--depth-slow-m", type=float, default=0.8, help="Slow down when forward clearance below this (meters).")
+    parser.add_argument("--depth-stop-m", type=float, default=0.4, help="Stop when forward clearance below this (meters).")
     return parser.parse_args()
 
 
@@ -115,6 +118,10 @@ def build_controller(args: argparse.Namespace):
 
 def main() -> int:
     args = parse_args()
+    if args.max_subgoal_hops is None:
+        args.max_subgoal_hops = 4 if args.controller == "mbra" else 15
+    if args.tick_hz is None:
+        args.tick_hz = 3.0 if args.controller == "mbra" else 2.0
     if args.target_step is None and not args.checkpoint_steps:
         raise SystemExit("Provide --target-step or --checkpoint-steps.")
     if args.tick_hz <= 0:
@@ -128,6 +135,16 @@ def main() -> int:
     if not rover.connect():
         raise SystemExit("Failed to connect to SDK.")
 
+    # --- Optional depth safety ---
+    depth_estimator = None
+    if args.depth_safety:
+        try:
+            from depth_estimator import DepthEstimator  # type: ignore
+            depth_estimator = DepthEstimator(model_size='small', max_depth=5.0)
+            print("Depth safety: ENABLED")
+        except Exception as exc:
+            print(f"[warn] Depth safety disabled — could not load model: {exc}")
+
     if args.checkpoint_steps:
         runtime.set_checkpoints(checkpoint_steps=list(args.checkpoint_steps))
 
@@ -138,6 +155,7 @@ def main() -> int:
     print(f"Database: {args.database}")
     print(f"Graph: {args.graph}")
     print(f"Controller: {args.controller}")
+    print(f"Subgoal hops: {args.max_subgoal_hops}")
     if args.target_step is not None:
         print(f"Target step: {args.target_step}")
     if args.checkpoint_steps:
@@ -147,6 +165,33 @@ def main() -> int:
 
     period = 1.0 / args.tick_hz
     iteration = 0
+    prev_cur_step: Optional[int] = None
+    target_reached_count = 0
+    no_progress_count = 0
+    TARGET_REACHED_MIN_CONF = 0.40
+    TARGET_REACHED_CONFIRM_TICKS = 3
+    JUMP_REJECT_THRESHOLD = 30
+    PROXIMITY_SLOWDOWN_STEPS = 15
+    NO_PROGRESS_RESET_TICKS = 20  # if stuck at same step for this many ticks, reset MBRA context
+
+    # --- Angular saturation / wall-crash prevention ---
+    ANGULAR_SAT_RATIO = 0.85           # fraction of max_angular that counts as "saturated"
+    ANGULAR_SAT_MAX_TICKS = 6          # max consecutive ticks at saturation before override
+    ANGULAR_OVERRIDE_TICKS = 4         # how many ticks to force straight after saturation
+    angular_sat_count = 0
+    angular_override_remaining = 0
+
+    # --- Jump rejection recovery ---
+    JUMP_REJECT_RECOVERY_TICKS = 12    # consecutive jump rejections before recovery
+    RECOVERY_BACKUP_TICKS = 5          # ticks to reverse during recovery
+    RECOVERY_BACKUP_LINEAR = -0.12     # gentle reverse
+    jump_reject_consecutive = 0
+    recovery_backup_remaining = 0
+
+    # --- RPM stall detection ---
+    RPM_STALL_THRESHOLD = 1.5          # RPM below this while commanding forward = stalled
+    RPM_STALL_MAX_TICKS = 8            # ticks before triggering stall recovery
+    rpm_stall_count = 0
 
     try:
         while True:
@@ -183,20 +228,157 @@ def main() -> int:
             controller_input = step_output["controller_input"]
             controller_input["heading_rate_dps"] = motion_state.get("heading_rate_dps")
             controller_input["rpm_mean"] = motion_state.get("rpm_mean")
-            controller_input["motion_state_stale"] = motion_state.get("is_stale")
-            command = controller.compute_command(controller_input, observation_heading_deg=heading_deg)
+            controller_input["motion_state_stale"] = False if dry_run else motion_state.get("is_stale")
+            # Indoor compass is unreliable — disable heading-based alignment
+            controller_input["subgoal_orientation"] = None
 
             confidence = float(controller_input.get("confidence", 0.0))
             path_found = bool(controller_input.get("path_found", True))
             path_error = controller_input.get("path_error")
-            if not path_found:
+            cur_step = controller_input.get("current_step")
+            tgt_step = controller_input.get("target_step")
+
+            # --- Localization jump rejection ---
+            # Bigger jumps require higher confidence to be trusted.
+            # A 30-step jump needs ~0.50 conf; 100+ steps needs ~0.85.
+            jump_rejected = False
+            if prev_cur_step is not None and cur_step is not None:
+                jump_mag = abs(int(cur_step) - prev_cur_step)
+                if jump_mag > JUMP_REJECT_THRESHOLD:
+                    required_conf = min(0.85, 0.35 + 0.005 * jump_mag)
+                    if confidence < required_conf:
+                        jump_rejected = True
+                        # Revert localizer so it doesn't converge on wrong position
+                        runtime.revert_localization()
+                        controller_input["current_step"] = prev_cur_step
+                        cur_step = prev_cur_step
+
+            command = controller.compute_command(controller_input, observation_heading_deg=heading_deg)
+
+            # --- Target reached detection (requires confidence + confirmation) ---
+            if cur_step is not None and tgt_step is not None and int(cur_step) >= int(tgt_step):
+                if confidence >= TARGET_REACHED_MIN_CONF:
+                    target_reached_count += 1
+                else:
+                    target_reached_count = 0
+                if target_reached_count >= TARGET_REACHED_CONFIRM_TICKS:
+                    if not dry_run:
+                        rover.stop()
+                    print(
+                        f"[{iteration:04d}] TARGET REACHED: cur={cur_step} >= target={tgt_step} "
+                        f"conf={confidence:.3f} (confirmed {target_reached_count} ticks)"
+                    )
+                    break
+            else:
+                target_reached_count = 0
+
+            # --- Proximity slowdown: reduce speed near target ---
+            if cur_step is not None and tgt_step is not None and command.linear > 0:
+                remaining = int(tgt_step) - int(cur_step)
+                if 0 < remaining <= PROXIMITY_SLOWDOWN_STEPS:
+                    scale = max(0.4, remaining / PROXIMITY_SLOWDOWN_STEPS)
+                    command.linear *= scale
+                    command.linear = max(0.06, command.linear)
+
+            # --- Recovery: if backing up from a stuck state, override everything ---
+            if recovery_backup_remaining > 0:
+                command.linear = RECOVERY_BACKUP_LINEAR
+                command.angular = 0.0
+                command.reason = "recovery_backup"
+                recovery_backup_remaining -= 1
+                if recovery_backup_remaining == 0:
+                    # Done backing up — reset localizer + controller for fresh start
+                    runtime.reset()
+                    if hasattr(controller, 'reset'):
+                        controller.reset()
+                    jump_reject_consecutive = 0
+                    angular_sat_count = 0
+                    angular_override_remaining = 0
+                    rpm_stall_count = 0
+                    prev_cur_step = None
+                    print(f"[{iteration:04d}] recovery complete — localizer reset")
+            elif jump_rejected:
+                jump_reject_consecutive += 1
+                if jump_reject_consecutive >= JUMP_REJECT_RECOVERY_TICKS:
+                    # Stuck facing wall — initiate backup recovery
+                    recovery_backup_remaining = RECOVERY_BACKUP_TICKS
+                    command.linear = RECOVERY_BACKUP_LINEAR
+                    command.angular = 0.0
+                    command.reason = "recovery_backup_start"
+                    print(f"[{iteration:04d}] jump rejection stuck for {jump_reject_consecutive} ticks — backing up")
+                else:
+                    command.linear = 0.0
+                    command.angular = 0.0
+                    command.reason = "jump_rejected_stop"
+            elif not path_found:
                 command.linear = 0.0
                 command.angular = 0.0
                 command.reason = "runtime_no_path_stop"
+                jump_reject_consecutive = 0
             elif args.stop_on_low_confidence and confidence < args.min_confidence:
                 command.linear = 0.0
                 command.angular = 0.0
                 command.reason = "runtime_low_confidence_stop"
+                jump_reject_consecutive = 0
+            else:
+                jump_reject_consecutive = 0
+
+                # --- Angular saturation detection (prevents wall-crash) ---
+                max_ang = getattr(controller, 'config', None)
+                max_ang = max_ang.max_angular if max_ang and hasattr(max_ang, 'max_angular') else 0.34
+                if abs(command.angular) > ANGULAR_SAT_RATIO * max_ang:
+                    angular_sat_count += 1
+                else:
+                    angular_sat_count = 0
+
+                if angular_sat_count >= ANGULAR_SAT_MAX_TICKS:
+                    angular_override_remaining = ANGULAR_OVERRIDE_TICKS
+                    angular_sat_count = 0
+                    print(f"[{iteration:04d}] angular saturation — forcing straight for {ANGULAR_OVERRIDE_TICKS} ticks")
+
+                if angular_override_remaining > 0:
+                    command.angular = 0.0
+                    command.reason = "angular_override_straight"
+                    angular_override_remaining -= 1
+
+                # --- Depth safety veto (monocular forward-clearance) ---
+                if depth_estimator is not None and command.linear > 0.0 and frame is not None:
+                    try:
+                        # Run at half rate to save GPU time (~1.5Hz at 3Hz loop)
+                        if iteration % 2 == 0:
+                            depth_map = depth_estimator.estimate(frame, target_size=(120, 160))
+                            clearance, _ = depth_estimator.get_polar_clearance(
+                                depth_map, num_bins=16, fov_horizontal=90.0
+                            )
+                            # Forward clearance = center 4 of 16 bins (±22.5° arc)
+                            fwd_clearance = float(min(clearance[6:10]))
+                            if fwd_clearance < args.depth_stop_m:
+                                command.linear = 0.0
+                                command.angular = 0.0
+                                command.reason = f"depth_stop({fwd_clearance:.2f}m)"
+                                if recovery_backup_remaining == 0:
+                                    recovery_backup_remaining = RECOVERY_BACKUP_TICKS
+                            elif fwd_clearance < args.depth_slow_m:
+                                scale = (fwd_clearance - args.depth_stop_m) / (args.depth_slow_m - args.depth_stop_m)
+                                command.linear *= max(0.3, scale)
+                                command.reason = f"depth_slow({fwd_clearance:.2f}m)"
+                    except Exception:
+                        pass  # depth inference failure is non-fatal
+
+                # --- RPM stall detection (robot pushing against obstacle) ---
+                rpm = motion_state.get("rpm_mean") or 0.0
+                if command.linear > 0.05 and rpm < RPM_STALL_THRESHOLD:
+                    rpm_stall_count += 1
+                else:
+                    rpm_stall_count = 0
+
+                if rpm_stall_count >= RPM_STALL_MAX_TICKS:
+                    recovery_backup_remaining = RECOVERY_BACKUP_TICKS
+                    command.linear = RECOVERY_BACKUP_LINEAR
+                    command.angular = 0.0
+                    command.reason = "rpm_stall_backup"
+                    rpm_stall_count = 0
+                    print(f"[{iteration:04d}] RPM stall detected — backing up")
 
             if dry_run:
                 sent = False
@@ -208,6 +390,7 @@ def main() -> int:
                 "heading_deg": heading_deg,
                 "heading_rate_dps": motion_state.get("heading_rate_dps"),
                 "rpm_mean": motion_state.get("rpm_mean"),
+                "motion_state_stale": motion_state.get("is_stale"),
                 "current_step": controller_input.get("current_step"),
                 "target_step": controller_input.get("target_step"),
                 "subgoal_step": controller_input.get("subgoal_step"),
@@ -236,6 +419,19 @@ def main() -> int:
                     f"reason={payload['reason']} sent={payload['sent']}"
                     f"{path_error_suffix}"
                 )
+
+            if cur_step is not None and not jump_rejected:
+                if prev_cur_step is not None and int(cur_step) == prev_cur_step:
+                    no_progress_count += 1
+                else:
+                    no_progress_count = 0
+                # If stuck at same step for too long, reset MBRA's observation
+                # context so it gets fresh frames and breaks out of the stall.
+                if no_progress_count > 0 and no_progress_count % NO_PROGRESS_RESET_TICKS == 0:
+                    if hasattr(controller, 'reset'):
+                        controller.reset()
+                        print(f"[{iteration:04d}] no-progress reset after {no_progress_count} ticks at step {cur_step}")
+                prev_cur_step = int(cur_step)
 
             elapsed = time.time() - loop_start
             if elapsed < period:

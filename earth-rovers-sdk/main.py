@@ -450,19 +450,39 @@ async def get_screenshot(view_types: str = "rear,map,front"):
 
 @app.get("/data")
 async def get_data():
-    # Try simple cache first (no Puppeteer)
     global simple_data_cache
     import time
-    if simple_data_cache.get("last_update", 0) > time.time() - 2.0:
-        # Use cached data if less than 2 seconds old
+
+    if simple_data_cache.get("last_update", 0) > time.time() - 0.5:
         return JSONResponse(content=simple_data_cache)
-    
-    # NO Puppeteer - only use cached data from browser JavaScript
-    # If no cached data, return error
-    raise HTTPException(
-        status_code=503, 
-        detail="No robot data available. Make sure browser is open at http://localhost:8000/sdk"
-    )
+
+    await need_start_mission()
+    if not auth_response_data:
+        await auth()
+
+    try:
+        data = await browser_service.data()
+        if not data:
+            raise HTTPException(
+                status_code=503,
+                detail="No robot data available from browser session",
+            )
+
+        if not isinstance(data, dict):
+            data = dict(data)
+        data["last_update"] = time.time()
+        simple_data_cache = data
+        return JSONResponse(content=data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No robot data available. Make sure the SDK browser session is joined "
+                f"at http://localhost:8000/sdk. Error: {exc}"
+            ),
+        ) from exc
 
 @app.post("/api/update_data")
 async def update_data(request: Request):
@@ -658,26 +678,53 @@ if __name__ == "__main__":
 
 @app.get("/v2/front")
 async def get_front_frame():
-    # ONLY use cached frames from browser JavaScript - NO Puppeteer
     global simple_frame_cache
     import time
-    
+
     frame_data = simple_frame_cache.get("frame")
     last_update = simple_frame_cache.get("last_update", 0)
     age = time.time() - last_update
-    
-    if frame_data and age < 5.0:  # Accept frames up to 5 seconds old
+
+    if frame_data and age < 1.0:
         response_data = {
             "front_frame": frame_data,
             "timestamp": datetime.utcnow().timestamp()
         }
         return JSONResponse(content=response_data)
-    
-    # No cached frame available - tell user to open browser
-    raise HTTPException(
-        status_code=503, 
-        detail=f"No camera frame available. Make sure browser is open at http://localhost:8000/sdk and video is visible. Frame age: {age:.1f}s"
-    )
+
+    await need_start_mission()
+    if not auth_response_data:
+        await auth()
+
+    try:
+        front_frame = await browser_service.front()
+        if not front_frame:
+            raise HTTPException(status_code=503, detail="Front frame unavailable from browser session")
+
+        if "," in front_frame:
+            _, frame_data = front_frame.split(",", 1)
+        else:
+            frame_data = front_frame
+
+        simple_frame_cache = {
+            "frame": frame_data,
+            "last_update": time.time(),
+        }
+        response_data = {
+            "front_frame": frame_data,
+            "timestamp": datetime.utcnow().timestamp(),
+        }
+        return JSONResponse(content=response_data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No camera frame available. Make sure browser is open at http://localhost:8000/sdk "
+                f"and video is visible. Error: {exc}"
+            ),
+        ) from exc
 
 
 @app.get("/v2/rear")

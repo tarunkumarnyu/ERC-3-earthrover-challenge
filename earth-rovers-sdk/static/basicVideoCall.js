@@ -439,6 +439,34 @@ function initializeImageParams({ imageFormat, imageQuality }) {
 window.initializeImageParams = initializeImageParams;
 window.getLastBase64Frame = getLastBase64Frame;
 
+// Periodically push camera frames to backend so Python runtime gets fresh frames
+// without pyppeteer round-trips. Captures every 300ms (~3.3 fps).
+let _framePushActive = false;
+async function _pushFrameLoop() {
+  if (_framePushActive) return;
+  _framePushActive = true;
+  while (true) {
+    try {
+      // UID 1000 is the front camera stream
+      const frame = await getLastBase64Frame(1000);
+      if (frame) {
+        // Strip "data:image/...;base64," prefix — backend expects raw base64
+        const base64Only = frame.includes(",") ? frame.split(",")[1] : frame;
+        fetch("/api/update_frame", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ frame: base64Only }),
+        }).catch(() => {});
+      }
+    } catch (e) {
+      // Video track not ready yet — ignore
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+// Start after a short delay to let video tracks initialize
+setTimeout(_pushFrameLoop, 3000);
+
 /*
  * Toggle mute/unmute for remote audio tracks (rover stream).
  * Does not affect browser-generated audio (e.g. TTS playback).
