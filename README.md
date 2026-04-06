@@ -1,4 +1,50 @@
-# ERC-3 EarthRover Challenge
+# ERC-3 EarthRover Challenge — Outdoor GPS Navigation Fork
+
+> **Fork of [vivekmattam02/ERC-3-earthrover-challenge](https://github.com/vivekmattam02/ERC-3-earthrover-challenge).** The upstream baseline is the indoor-navigation workspace for the NYU EarthRover Challenge. This fork adds a complete **outdoor GPS waypoint navigation runtime** with **monocular depth-based obstacle avoidance** on top of it.
+
+## What this fork adds
+
+All additions are isolated under `T_*` filenames so they can be reviewed independently of the upstream baseline.
+
+| File | What it does |
+|---|---|
+| **`T_outdoor_runtime.py`** | Top-level outdoor mission runner. Pulls GPS + heading from the SDK, sequences mission checkpoints, optionally arms depth-based safety, and supports `--dry-run`, `--send-control`, `--depth-safety`, and `--auto-mission` flags. |
+| **`T_live_depth_viewer.py`** | Real-time Depth-Anything-V2 depth viewer with auto-engaged obstacle avoidance — useful for tuning and field debugging. |
+| **`src/T_gps_navigator.py`** | Pure-Python GPS math (no `utm` dependency): haversine distance/bearing, heading-error computation, and a `WaypointManager` that advances through mission checkpoints. |
+| **`src/T_outdoor_controller.py`** | Proportional heading controller that steers toward the active GPS waypoint, with an optional monocular-depth obstacle-avoidance overlay. |
+| **`src/depth_estimator.py`** | Thin wrapper around Depth-Anything-V2 inference. |
+| **`src/depth_safety.py`** | Depth-based safety layer that vetoes / overrides controller commands when obstacles are too close. |
+| **RTM client fix** | Patched to send commands to the correct `BOT_UID`. |
+
+### Outdoor stack at a glance
+
+```
+GPS + heading (SDK)            ┐
+WaypointManager (haversine)    ├──►  T_outdoor_controller (P-controller)  ──►  motor cmds
+Mission checkpoint API         ┘                    ▲
+                                                    │ veto / slowdown
+                          DA-V2 depth  ──►  depth_safety
+```
+
+### Running it
+
+```bash
+# Dry run, no motor commands
+python T_outdoor_runtime.py
+
+# Live with motor commands
+python T_outdoor_runtime.py --send-control
+
+# Live with depth-based obstacle avoidance
+python T_outdoor_runtime.py --send-control --depth-safety
+
+# Start the SDK mission automatically on launch
+python T_outdoor_runtime.py --send-control --auto-mission
+```
+
+---
+
+## Upstream baseline (unchanged)
 
 Standalone indoor-navigation workspace for the NYU EarthRover Challenge effort.
 
@@ -92,4 +138,3 @@ This workspace should be treated as a standalone project.
 - The local `.env` is intentionally not committed.
 - Training configs inside `mbra_repo/train/config/` still contain dataset placeholders; that is expected.
 - `verify_workspace.py` is the first check teammates should run after cloning.
-# ERC-3-earthrover-challenge
