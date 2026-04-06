@@ -18,13 +18,11 @@ All additions are isolated under `T_*` filenames so they can be reviewed indepen
 
 ### Outdoor stack at a glance
 
-```
-GPS + heading (SDK)            ┐
-WaypointManager (haversine)    ├──►  T_outdoor_controller (P-controller)  ──►  motor cmds
-Mission checkpoint API         ┘                    ▲
-                                                    │ veto / slowdown
-                          DA-V2 depth  ──►  depth_safety
-```
+<p align="center">
+  <img src="assets/outdoor_stack.png" width="100%" alt="Outdoor GPS navigation stack"/>
+</p>
+
+`T_outdoor_runtime.py` orchestrates the loop: it pulls GPS / heading / camera frames from the SDK, lets the `WaypointManager` pick the active checkpoint and compute the target bearing, runs the P-controller to produce a `(linear, angular)` command, and lets the depth safety layer veto or scale the command before it reaches the RTM client.
 
 ### Running it
 
